@@ -1,0 +1,45 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Personal job-search data and runtime state
+/data/
+/profile/
+/inbox/
+/state/
+/documents/
+/upskill/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+
+# Dependencies and caches
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.browser-deps/
+.browser-binaries/
+
+# Generated application bundles
+/build/
+/dist/
+/UserVersion/
+/web/dist/
+
+# Editor / OS local files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local documentation
+/docs/

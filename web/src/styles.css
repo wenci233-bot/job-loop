@@ -1,0 +1,49 @@
+body { margin: 0; background: #f3f5f9; font-family: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif; }
+
+.chip { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; }
+.chip.blue { background: #e8efff; color: #2f66f6; }
+.chip.green { background: #e6f7ee; color: #18a058; }
+.chip.orange { background: #fdf3e5; color: #e07c1f; }
+.chip.red { background: #fdeceb; color: #d93025; }
+.chip.purple { background: #f0ecfe; color: #7a5af5; }
+
+/* 入场动画用 backwards：结束后不再持有 transform，避免把 position:fixed 的弹窗困在页面容器里 */
+.content > * { animation: fadeUp .28s ease backwards; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* 按钮质感：按压回弹 + 主按钮浮起投影 */
+.el-button { transition: transform .14s cubic-bezier(.34,1.56,.64,1), box-shadow .2s ease, background-color .2s ease, border-color .2s ease, color .2s ease; }
+.el-button:not(.is-disabled):active { transform: scale(.93); }
+.el-button--primary:not(.is-plain):not(.is-disabled) { box-shadow: 0 2px 8px rgba(47,102,246,.28); }
+.el-button--primary:not(.is-plain):not(.is-disabled):hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(47,102,246,.36); }
+.el-button--success:not(.is-plain):not(.is-disabled) { box-shadow: 0 2px 8px rgba(24,160,88,.25); }
+.el-button--warning:not(.is-plain):not(.is-disabled) { box-shadow: 0 2px 8px rgba(224,124,31,.22); }
+
+/* 整行可点击展开的表格 */
+.el-table.clickable-rows .el-table__row { cursor: pointer; }
+.el-table.clickable-rows .el-table__row:hover td { background: #f5f8ff; }
+
+/* 数字滚动容器 */
+.num-tabular { font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  .content > * { animation: none; }
+  .el-button, .el-button:hover, .el-button:active { transform: none !important; }
+}
+
+.layout { display: flex; min-height: 100vh; }
+.sidebar { width: 212px; flex-shrink: 0; background: linear-gradient(180deg, #17244a, #131d3a); display: flex; flex-direction: column; }
+.logo { display: flex; align-items: center; gap: 9px; color: #fff; font-size: 15px; padding: 16px 18px 14px; }
+.logo .mark { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #3b76ff, #6f9bff); display: grid; place-items: center; color: #fff; }
+.nav-group { font-size: 11px; color: #6d7fa5; padding: 12px 20px 4px; letter-spacing: .06em; }
+
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.topbar { display: flex; align-items: center; gap: 14px; background: #fff; border-bottom: 1px solid #e4e8f0; padding: 0 20px; height: 52px; position: sticky; top: 0; z-index: 10; }
+.topbar .title { font-size: 15px; font-weight: 600; color: #1f2733; }
+.topbar .spacer { flex: 1; }
+.content { padding: 16px 20px 28px; }
+
+.page-card { background: #fff; border: 1px solid #e4e8f0; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+.page-title { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+.page-sub { color: #5b6575; font-size: 12.5px; margin-bottom: 14px; }
+.muted { color: #8a93a3; font-size: 12px; }
