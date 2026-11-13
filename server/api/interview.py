@@ -90,7 +90,13 @@ def save_mock(body: MockSaveBody):
     if not body.report:
         raise HTTPException(status_code=400, detail="缺少评估报告")
     session = interview_svc.save_mock(body.company, body.role, body.history, body.report)
-    return {"session": session}
+    from server.services import debrief
+    try:
+        result = debrief.import_mock(body.company, body.role, session['id'])
+        return {'session': session, 'debrief_synced': True, 'debrief_round': result['round']['round']}
+    except (OSError, ValueError, LookupError) as exc:
+        # 模拟记录已安全保存；下次访问历史复盘会自动重试同步。
+        return {'session': session, 'debrief_synced': False, 'sync_warning': str(exc)}
 
 
 @router.get("/mock/list")

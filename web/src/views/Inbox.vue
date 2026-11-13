@@ -1,6 +1,9 @@
 <template>
   <div>
     <div class="page-title">岗位收集</div>
+    <el-alert v-if="matchTask.error" :title="matchTask.error" type="error" :closable="false" />
+    <el-alert v-if="matchTask.warning" :title="matchTask.warning" type="warning" :closable="false" />
+    <el-alert v-if="matchTask.status === 'cancelled'" title="匹配已停止，上一批结果已保留。" type="info" :closable="false" />
     <el-tabs v-model="mode">
       <el-tab-pane label="手动贴入" name="manual" />
       <el-tab-pane label="AI 智能匹配" name="ai" />
@@ -40,15 +43,15 @@
         <el-row :gutter="16">
           <el-col :span="11">
             <el-form-item label="意向岗位">
-              <el-select v-model="ai.directions" multiple filterable allow-create default-first-option
-                         placeholder="选择或直接输入，可多选" style="width:100%">
-                <el-option v-for="d in DIRECTIONS" :key="d" :label="d" :value="d" />
-              </el-select>
+              <el-input :disabled="matchBusy" v-model="directionText" type="textarea"
+                        :autosize="{ minRows: 2, maxRows: 5 }"
+                        placeholder="自由输入岗位、行业或求职描述，例如：半导体、芯片验证，或想找新能源行业的硬件研发岗位" />
+              <div class="muted direction-hint">支持任意行业和岗位，多个方向可换行填写。AI 优先按求职意向推荐，再结合档案判断匹配程度与能力差距。</div>
             </el-form-item>
           </el-col>
           <el-col :span="7">
             <el-form-item label="城市">
-              <el-select v-model="ai.cities" multiple filterable allow-create default-first-option
+              <el-select :disabled="matchBusy" v-model="ai.cities" multiple filterable allow-create default-first-option
                          placeholder="可多选" style="width:100%">
                 <el-option v-for="c in CITIES" :key="c" :label="c" :value="c" />
               </el-select>
@@ -56,25 +59,27 @@
           </el-col>
           <el-col :span="6">
             <el-form-item label="求职类型">
-              <el-select v-model="ai.job_type" style="width:100%">
+              <el-select :disabled="matchBusy" v-model="ai.job_type" style="width:100%">
                 <el-option v-for="t in JOB_TYPES" :key="t" :label="t" :value="t" />
               </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="24">
             <el-form-item label="行业类别">
-              <el-checkbox-group v-model="ai.categories">
-                <el-checkbox v-for="cat in CATEGORIES" :key="cat" :value="cat" :label="cat" />
-              </el-checkbox-group>
+              <el-select :disabled="matchBusy" v-model="ai.categories" multiple filterable allow-create default-first-option
+                         placeholder="选填，不限行业；也可输入自定义类别后按回车" style="width:100%">
+                <el-option v-for="cat in CATEGORIES" :key="cat" :value="cat" :label="cat" />
+              </el-select>
             </el-form-item>
           </el-col>
         </el-row>
         <div style="margin-left:84px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-          <el-button type="primary" :loading="matchTask.status === 'running'" :disabled="matchTask.status === 'running'" @click="runMatch">
-            <el-icon v-if="matchTask.status !== 'running'" style="margin-right:4px"><MagicStick /></el-icon>智能匹配
+          <el-button :type="matchBusy ? 'danger' : 'primary'" :loading="matchTask.stopping" @click="matchBusy ? stopMatch() : runMatch(false)">
+            <el-icon v-if="!matchBusy" style="margin-right:4px"><MagicStick /></el-icon>{{ matchTask.stopping ? '正在停止…' : matchBusy ? '停止匹配' : '智能匹配' }}
           </el-button>
-          <div v-if="matchTask.status === 'running'" style="flex:1;min-width:240px;max-width:380px">
-            <el-progress :percentage="Math.min(95, Math.round(matchTask.elapsed / 0.9))" :stroke-width="8" />
+          <el-button :disabled="matchBusy || !aiResults.length" @click="runMatch(true)">不满意，换一批</el-button>
+          <div v-if="matchBusy" style="flex:1;min-width:240px;max-width:380px">
+            <el-progress :percentage="Math.min(99, Math.round(matchTask.done / Math.max(matchTask.total, 3) * 100))" :stroke-width="8" />
             <div class="muted" style="margin-top:2px">{{ matchTask.progress || '匹配中' }} · {{ matchTask.elapsed }}s</div>
           </div>
         </div>
@@ -89,7 +94,7 @@
             {{ aiOpen ? '收起' : '展开' }}
             <el-icon class="chev" :class="{ open: aiOpen }" style="margin-left:2px"><ArrowRight /></el-icon>
           </el-button>
-          <el-button size="small" text type="info" @click="closeMatch">清空</el-button>
+          <el-button size="small" text type="info" :disabled="matchBusy" @click="closeMatch">清空</el-button>
         </span>
       </div>
       <div class="job-list" v-show="aiOpen">
@@ -193,23 +198,23 @@
 </template>
 
 <script setup>
-import { onActivated, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElCollapseTransition } from 'element-plus'
 import { api } from '../api'
 import JdDetail from '../components/JdDetail.vue'
 import AddRecordDialog from '../components/AddRecordDialog.vue'
 import { useRecordDeletion } from '../recordActions'
 import CompanyLogo from '../components/CompanyLogo.vue'
-import { matchTask, startMatchTask, getMatchResults, clearMatchResults } from '../store'
+import { matchTask, startMatchGeneration, stopMatchTask, getMatchResults, getMatchCriteria, clearMatchResults } from '../store'
 
+const matchBusy = computed(() => ['starting', 'running'].includes(matchTask.status))
 const selected = ref([])
 const addOpen = ref(false), entryTableRef = ref()
 const { deleting, remove } = useRecordDeletion(async () => { selected.value = []; entryTableRef.value?.clearSelection(); await refresh() })
 const deleteSelected = () => remove(selected.value)
 
-const CATEGORIES = ['互联网大厂', '互联网中厂', '手机厂', '制造业', '国企', '银行']
+const CATEGORIES = ['互联网大厂', '互联网中厂', '手机厂', '半导体', '新能源', '制造业', '医疗健康', '国企', '银行']
 const JOB_TYPES = ['暑期实习', '日常实习', '校招', '社招']
-const DIRECTIONS = ['大模型算法工程师', '大模型强化学习算法工程师', '多模态算法工程师', '机器学习算法工程师', '算法工程师', '后端开发工程师', '前端开发工程师', '数据分析']
 const CITIES = ['北京', '上海', '深圳', '广州', '杭州', '成都', '南京', '武汉', '西安', '苏州', '长沙', '合肥']
 
 const mode = ref('manual')
@@ -221,6 +226,11 @@ const parsing = ref(false)
 const saving = ref(false)
 
 const ai = ref({ directions: [], cities: [], job_type: '校招', categories: [] })
+// 保持 directions 数组协议，兼容已有匹配条件与换批记录。
+const directionText = computed({
+  get: () => ai.value.directions.join('\n'),
+  set: value => { ai.value.directions = value.split('\n') },
+})
 const aiResults = ref([])
 const aiOpen = ref(true)
 function closeMatch() {
@@ -258,14 +268,18 @@ async function save() {
   } catch (e) { ElMessage.error(e.message) } finally { saving.value = false }
 }
 
-async function runMatch() {
-  if (!ai.value.directions.length) { ElMessage.warning('请先选择或输入意向岗位'); return }
-  savedAs.value = {}
-  clearMatchResults()
-  try {
-    const d = await api.post('/inbox/ai-match/start', ai.value)
-    startMatchTask(d.task_id)   // 全局轮询（App 级），切页不中断
-  } catch (e) { ElMessage.error(e.message) }
+async function stopMatch() {
+  try { await stopMatchTask() } catch(e) { ElMessage.error(e.message) }
+}
+async function runMatch(change = false) {
+  if (matchBusy.value) return
+  const criteria = change ? (getMatchCriteria() || ai.value) : ai.value
+  const directions = [...new Set(criteria.directions.map(value => value.trim()).filter(Boolean))]
+  if (!directions.length) { ElMessage.warning('请先输入意向岗位、行业或求职描述'); return }
+  const body = { directions, cities: [...criteria.cities], job_type: criteria.job_type, categories: [...criteria.categories] }
+  if (change) ai.value = { ...body }
+  try { await startMatchGeneration(body, change) }
+  catch(e) { ElMessage.error(e.message) }
 }
 
 // 匹配完成（无论当时在哪个页面），回到本页时展示结果
@@ -274,6 +288,7 @@ watch(() => matchTask.status, (st) => {
     const r = getMatchResults()
     if (r?.length) {
       aiResults.value = r
+      aiOpen.value = true
       savedAs.value = {}
       ElMessage.success(`匹配完成：${r.length} 条推荐`)
     }
@@ -282,6 +297,8 @@ watch(() => matchTask.status, (st) => {
 
 onMounted(() => {
   refresh()
+  const criteria = getMatchCriteria()
+  if (criteria) ai.value = criteria
   const saved = getMatchResults()
   if (saved?.length) aiResults.value = saved
 })
@@ -304,6 +321,7 @@ async function addAi(row, i, status) {
 </script>
 
 <style scoped>
+.direction-hint { margin-top: 6px; line-height: 1.6; }
 .logo-mini { width: 22px; height: 22px; border-radius: 5px; color: #fff; font-size: 12px; font-weight: 600; display: inline-grid; place-items: center; margin-right: 7px; vertical-align: -5px; }
 .cell-company { display: flex; align-items: center; }
 .salary-text { color: #e07c1f; font-weight: 600; font-variant-numeric: tabular-nums; }

@@ -1,111 +1,31 @@
 import { reactive } from 'vue'
 import { api } from './api'
 
-/** 智能匹配任务（全局单例）：轮询在 App 级运行，切页不中断；结果持久化到 sessionStorage。 */
-export const matchTask = reactive({
-  id: null,
-  status: 'idle',   // idle | running | done | error
-  progress: '',
-  elapsed: 0,
-  error: null,
-})
-
-const ID_KEY = 'matchTaskId'
-const RES_KEY = 'matchResults'
-
-export function saveTaskId(id) {
-  matchTask.id = id
-  sessionStorage.setItem(ID_KEY, id)
+const RES_KEY = 'matchResults', HISTORY_KEY = 'jobloop.matchHistory', CRITERIA_KEY = 'matchCriteria'
+let historyMemory = []
+function readJSON(storage, key, fallback) { try { return JSON.parse(storage?.getItem(key)) ?? fallback } catch { return fallback } }
+export function getMatchResults() { return readJSON(sessionStorage, RES_KEY, null) }
+export function getMatchCriteria() { return readJSON(sessionStorage, CRITERIA_KEY, null) }
+export function getMatchHistory() {
+  const saved = readJSON(globalThis.localStorage, HISTORY_KEY, [])
+  return [...new Set([...historyMemory, ...readJSON(sessionStorage, HISTORY_KEY, []), ...(Array.isArray(saved) ? saved : []), ...(getMatchResults() || []).map(row => row.company)].filter(name => typeof name === 'string' && name.trim()))]
 }
-export function loadTaskId() {
-  return sessionStorage.getItem(ID_KEY)
-}
-
-export function setMatchResults(results) {
-  sessionStorage.setItem(RES_KEY, JSON.stringify(results || []))
-}
-export function getMatchResults() {
-  try { return JSON.parse(sessionStorage.getItem(RES_KEY)) || null } catch { return null }
+export function setMatchResults(results, criteria) {
+  historyMemory = [...new Set([...getMatchHistory(), ...results.map(row => row.company)])]
+  try { globalThis.localStorage?.setItem(HISTORY_KEY, JSON.stringify(historyMemory)) } catch {}
+  try { sessionStorage.setItem(HISTORY_KEY, JSON.stringify(historyMemory)) } catch {}
+  sessionStorage.setItem(RES_KEY, JSON.stringify(results))
+  if (criteria) sessionStorage.setItem(CRITERIA_KEY, JSON.stringify(criteria))
 }
 export function clearMatchResults() {
+  historyMemory = getMatchHistory()
+  try { globalThis.localStorage?.setItem(HISTORY_KEY, JSON.stringify(historyMemory)); sessionStorage.setItem(HISTORY_KEY, JSON.stringify(historyMemory)) } catch {}
   sessionStorage.removeItem(RES_KEY)
-}
-
-let pollTimer = null
-let elapsedTimer = null
-let onDoneCb = null
-let onErrorCb = null
-
-function stopMatchTimers() {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-  if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
-}
-
-/** 注册匹配完成/失败回调（App 级通知用） */
-export function onMatchDone(cb) { onDoneCb = cb }
-export function onMatchError(cb) { onErrorCb = cb }
-
-export function startMatchPolling() {
-  stopMatchTimers()
-  matchTask.status = 'running'
-  elapsedTimer = setInterval(() => { matchTask.elapsed++ }, 1000)
-  pollTimer = setInterval(async () => {
-    if (!matchTask.id) return
-    try {
-      const d = await api.get('/inbox/ai-match/task/' + matchTask.id)
-      matchTask.progress = d.progress
-      if (d.status === 'done') {
-        setMatchResults(d.results)
-        matchTask.status = 'done'
-        stopMatchTimers()
-        sessionStorage.removeItem(ID_KEY)
-        onDoneCb?.(d.results)
-      } else if (d.status === 'error') {
-        matchTask.status = 'error'
-        matchTask.error = d.error
-        stopMatchTimers()
-        sessionStorage.removeItem(ID_KEY)
-        onErrorCb?.(d.error)
-      }
-    } catch { /* 单次轮询失败忽略 */ }
-  }, 2500)
-}
-
-/** 启动一个新任务（Inbox 调用） */
-export function startMatchTask(id) {
-  saveTaskId(id)
-  matchTask.id = id
-  matchTask.status = 'running'
-  matchTask.progress = '启动中'
-  matchTask.elapsed = 0
-  matchTask.error = null
-  startMatchPolling()
-}
-
-/** 应用启动时探测未收尾的任务（App 挂载时调用）；返回是否有任务 */
-export function resumeMatchIfAny() {
-  const id = loadTaskId()
-  if (!id) return false
-  matchTask.id = id
-  api.get('/inbox/ai-match/task/' + id).then(d => {
-    if (d.status === 'running') {
-      matchTask.status = 'running'
-      matchTask.progress = d.progress
-      startMatchPolling()
-    } else if (d.status === 'done') {
-      setMatchResults(d.results)
-      matchTask.status = 'done'
-      sessionStorage.removeItem(ID_KEY)
-      onDoneCb?.(d.results)
-    } else {
-      sessionStorage.removeItem(ID_KEY)
-    }
-  }).catch(() => sessionStorage.removeItem(ID_KEY))
-  return true
 }
 
 /** 可停止的评估/准备包任务。取消与轮询使用版本号隔离，防止迟到响应恢复旧任务。 */
 const makeTask = () => reactive({ id: null, status: 'idle', stopping: false, stopRequested: false, progress: '', elapsed: 0, error: null, warning: '', company: '', role: '', done: 0, total: 0, current: '' })
+export const matchTask = makeTask()
 export const prepTask = makeTask()
 export const evalTask = makeTask()
 function controller(task, key, path, startPath) {
@@ -113,13 +33,17 @@ function controller(task, key, path, startPath) {
   let pollTimer, elapsedTimer, version = 0, polling = false
   const read = () => { try { return JSON.parse(sessionStorage.getItem(key)) } catch { return sessionStorage.getItem(key) } }
   const clearTimers = () => { clearInterval(pollTimer); clearInterval(elapsedTimer); pollTimer = elapsedTimer = null }
-  function store() { sessionStorage.setItem(key, JSON.stringify({ id: task.id, company: task.company, role: task.role, elapsed: task.elapsed })) }
+  function store() { sessionStorage.setItem(key, JSON.stringify({ id: task.id, company: task.company, role: task.role, elapsed: task.elapsed, criteria: task.criteria })) }
   function accept(data) {
-    Object.assign(task, data, { stopping: false, stopRequested: false, warning: '' })
+    if (key === 'matchTaskId' && data.status === 'done') {
+      if (!Array.isArray(data.results)) throw new Error('匹配结果格式异常')
+      setMatchResults(data.results, task.criteria)
+    }
+    Object.assign(task, data, { stopping: false, stopRequested: false, warning: data.warning || '' })
     if (data.status === 'running') return
     clearTimers(); sessionStorage.removeItem(key)
     if (data.status === 'done') {
-      const payload = key === 'prepTaskId' ? { company: task.company, role: task.role, prep: data.prep } : data
+      const payload = key === 'matchTaskId' ? data.results : key === 'prepTaskId' ? { company: task.company, role: task.role, prep: data.prep } : data
       doneCallbacks.forEach(cb => cb(payload))
     } else if (data.status === 'error') errorCallbacks.forEach(cb => cb(data.error))
   }
@@ -179,7 +103,7 @@ function controller(task, key, path, startPath) {
   async function start(body) {
     if (['starting', 'running'].includes(task.status)) return
     ++version; polling = false; clearTimers()
-    Object.assign(task, { id: null, status: 'starting', stopping: false, stopRequested: false, error: null, warning: '', elapsed: 0, done: 0, total: body.ids?.length || 0, company: body.company || '', role: body.role || '', progress: '启动中' })
+    Object.assign(task, { id: null, status: 'starting', stopping: false, stopRequested: false, error: null, warning: '', elapsed: 0, done: 0, total: body.ids?.length || 0, company: body.company || '', role: body.role || '', criteria: key === 'matchTaskId' ? { directions: [...body.directions], cities: [...body.cities], job_type: body.job_type, categories: [...body.categories] } : undefined, progress: '启动中' })
     try {
       const data = await api.post(startPath, body)
       if (!data.task_id) throw new Error('后端未返回任务编号')
@@ -222,3 +146,15 @@ export const loadPrepId = () => prepController.read()
 export const clearPrepTask = () => prepController.clear()
 export const startPrepTask = (id, company, role) => prepController.attach(id, { company, role })
 export const startEvalTask = (id, total) => evalController.attach(id, { total })
+
+const matchController = controller(matchTask, 'matchTaskId', '/inbox/ai-match/task/', '/inbox/ai-match/start')
+export const onMatchDone = cb => matchController.done(cb)
+export const onMatchError = cb => matchController.error(cb)
+export const resumeMatchIfAny = () => matchController.resume()
+export const stopMatchTask = () => matchController.stop()
+export const startMatchTask = id => matchController.attach(id)
+export async function startMatchGeneration(criteria, change = false) {
+  const excluded = change ? getMatchHistory() : []
+  if (excluded.length > 5000) throw new Error('历史排除名单已超过 5000 家，无法继续严格换批；请调整条件后重新智能匹配。')
+  return matchController.start({ ...criteria, exclude_companies: excluded })
+}

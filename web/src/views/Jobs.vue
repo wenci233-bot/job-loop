@@ -28,12 +28,13 @@
           <el-button size="small" type="primary" plain @click="addJobOpen = true">添加岗位</el-button>
           <el-button size="small" type="danger" plain :disabled="!selectedRows.length || evalBusy || !!scoring || deleting" @click="remove(selectedRows)">删除选中（{{ selectedRows.length }}）</el-button>
           <el-button v-if="evalBusy" type="danger" size="small" :loading="evalTask.stopping" @click="stopEvaluation">{{ evalTask.stopping ? '正在停止…' : '停止评估' }}</el-button>
-          <el-button type="primary" size="small" :disabled="!selectedIds.length || evalBusy"
+          <el-button type="primary" size="small" :disabled="!selectedIds.length || evaluationLocked"
                      :loading="evalBusy" @click="batchEval">
             <el-icon style="margin-right:3px"><MagicStick /></el-icon>AI 批量评估（{{ selectedIds.length }}）
           </el-button>
         </span>
       </div>
+      <div class="muted" style="margin-bottom:10px">勾选岗位后可批量 AI 评估，表头复选框可全选；已评估岗位支持重新评估。</div>
       <el-table ref="poolTableRef" :data="entries" size="small" class="clickable-rows"
                 empty-text="暂无候选岗位 —— 去岗位收集贴 JD 或跑 AI 智能匹配" row-key="id"
                 :row-class-name="poolRowClass" @selection-change="selectedRows = $event" @row-click="onPoolRowClick">
@@ -89,7 +90,7 @@
               </div>
               <div class="pool-detail-side" v-else>
                 <el-empty description="尚未评估" :image-size="60">
-                  <el-button size="small" type="primary" :loading="scoring === row.id" @click.stop="score(row)">
+                  <el-button size="small" type="primary" :loading="scoring === row.id" :disabled="evaluationLocked" @click.stop="score(row)">
                     <el-icon style="margin-right:3px"><MagicStick /></el-icon>AI 匹配评估
                   </el-button>
                 </el-empty>
@@ -97,7 +98,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column type="selection" width="42" :selectable="() => !evalBusy && !scoring && !deleting" />
+        <el-table-column type="selection" width="42" :selectable="() => !evaluationLocked" />
         <el-table-column type="index" label="#" width="50" />
         <el-table-column label="公司" min-width="120">
           <template #default="{ row }">
@@ -125,12 +126,12 @@
             <span v-else class="muted">待评</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="300" class-name="ops-col">
+        <el-table-column label="操作" width="380" class-name="ops-col">
           <template #default="{ row }">
-            <el-button v-if="!row.veto && row.score == null" size="small" type="primary" plain
-                       :loading="scoring === row.id" @click.stop="score(row)">
+            <el-button size="small" type="primary" plain
+                       :loading="scoring === row.id" :disabled="evaluationLocked" @click.stop="score(row)">
               {{ scoring === row.id ? `评估中 ${scoringElapsed}s` : '' }}
-              <el-icon v-if="scoring !== row.id" style="margin-right:3px"><MagicStick /></el-icon>{{ scoring === row.id ? '' : 'AI 评估' }}
+              <el-icon v-if="scoring !== row.id" style="margin-right:3px"><MagicStick /></el-icon>{{ scoring === row.id ? '' : (row.rank || row.veto || row.score != null ? '重新评估' : 'AI 评估') }}
             </el-button>
             <el-button v-if="!row.veto && row.status !== '已申请'" size="small" type="success" plain
                        @click.stop="apply(row)">
@@ -226,11 +227,11 @@ let scoringTimer = null
 const poolTableRef = ref()
 const selectedRows = ref([])
 
-const selectedIds = computed(() =>
-  selectedRows.value.filter(r => !r.veto && r.score == null && r.status !== '已申请').map(r => r.id))
+const evaluationLocked = computed(() => evalBusy.value || scoring.value !== null || deleting.value)
+const selectedIds = computed(() => [...new Set(selectedRows.value.map(row => row.id))])
 
 async function batchEval() {
-  if (!selectedIds.value.length) return
+  if (evaluationLocked.value || !selectedIds.value.length) return
   try {
     await startEvaluation(selectedIds.value)
   } catch (e) { ElMessage.error(e.message) }
@@ -310,12 +311,15 @@ async function refresh() {
 }
 
 async function score(row) {
+  if (evaluationLocked.value) return
   scoring.value = row.id
   scoringElapsed.value = 0
   scoringTimer = setInterval(() => { scoringElapsed.value++ }, 1000)
   try {
     const d = await api.post('/rank/score/' + row.id)
+    const wasApplied = row.status === '已申请'
     Object.assign(row, d.entry)
+    if (wasApplied) row.status = '已申请'
     if (d.result.veto) ElMessage.warning('触线否决：' + d.result.reasons[0])
     else ElMessage.success(`评估完成：${d.result.score} 分 · ${d.result.verdict}`)
     poolTableRef.value?.toggleRowExpansion(row, true)

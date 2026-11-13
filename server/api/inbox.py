@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import CancelledError
+from copy import deepcopy
 import threading
 import time
 import uuid
@@ -16,6 +18,8 @@ router = APIRouter(prefix="/inbox", tags=["inbox"])
 
 # 后台匹配任务（进程内）：{task_id: {status, progress, results, error}}
 _MATCH_TASKS: dict[str, dict] = {}
+_MATCH_LOCK = threading.RLock()
+_MATCH_CANCEL = {}
 
 
 class ParseBody(BaseModel):
@@ -77,6 +81,7 @@ def delete_entries(body: DeleteBody):
 
 
 class AiMatchBody(BaseModel):
+    exclude_companies: list[str] = Field(default_factory=list, max_length=5000)
     directions: list[str] = []
     cities: list[str] = []
     job_type: str = "校招"
@@ -94,26 +99,59 @@ def ai_match_start(body: AiMatchBody):
     if body.job_type not in aimatch_svc.JOB_TYPES:
         raise HTTPException(status_code=400, detail=f"求职类型必须是 {'/'.join(aimatch_svc.JOB_TYPES)} 之一")
     task_id = uuid.uuid4().hex[:10]
-    _MATCH_TASKS[task_id] = {"status": "running", "progress": "启动中…", "results": None, "error": None}
+    event = threading.Event()
+    with _MATCH_LOCK:
+        _MATCH_CANCEL[task_id] = event
+        _MATCH_TASKS[task_id] = dict(status='running', progress='启动中…', results=None, error=None, warning='', done=0, total=3)
 
-    def _run():
-        t0 = time.time()
+    def progress(message, done):
+        with _MATCH_LOCK:
+            if not event.is_set():
+                _MATCH_TASKS[task_id].update(progress=message, done=done)
+
+    def warning(message):
+        with _MATCH_LOCK:
+            if not event.is_set():
+                _MATCH_TASKS[task_id]['warning'] = message
+
+    def run():
         try:
-            results = aimatch_svc.match(
-                directions, cities, body.job_type, categories,
-                progress_cb=lambda msg: _MATCH_TASKS[task_id].update(progress=msg))
-            _MATCH_TASKS[task_id].update(status="done", results=results,
-                                         progress=f"完成，共 {len(results)} 条（{time.time() - t0:.0f} 秒）")
-        except Exception as e:
-            _MATCH_TASKS[task_id].update(status="error", error=str(e)[:200])
+            results = aimatch_svc.match(directions, cities, body.job_type, categories,
+                progress_cb=progress, exclude_companies=body.exclude_companies,
+                cancel_event=event, warning_cb=warning)
+            with _MATCH_LOCK:
+                if not event.is_set():
+                    _MATCH_TASKS[task_id].update(status='done', results=results, done=3, progress=f'完成，共 {len(results)} 条')
+        except CancelledError:
+            pass
+        except Exception as exc:
+            with _MATCH_LOCK:
+                if not event.is_set():
+                    _MATCH_TASKS[task_id].update(status='error', error=str(exc)[:300])
+        finally:
+            with _MATCH_LOCK:
+                _MATCH_CANCEL.pop(task_id, None)
 
-    threading.Thread(target=_run, daemon=True).start()
-    return {"task_id": task_id}
+    threading.Thread(target=run, daemon=True).start()
+    return {'task_id': task_id}
 
 
-@router.get("/ai-match/task/{task_id}")
+@router.get('/ai-match/task/{task_id}')
 def ai_match_task(task_id: str):
-    task = _MATCH_TASKS.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="任务不存在（服务可能已重启），请重新匹配")
-    return {k: v for k, v in task.items()}
+    with _MATCH_LOCK:
+        task = _MATCH_TASKS.get(task_id)
+        if task is None:
+            raise HTTPException(404, '任务不存在（服务可能已重启），请重新匹配')
+        return deepcopy(task)
+
+
+@router.post('/ai-match/task/{task_id}/stop')
+def stop_ai_match(task_id: str):
+    with _MATCH_LOCK:
+        task = _MATCH_TASKS.get(task_id)
+        if task is None:
+            raise HTTPException(404, '任务不存在（服务可能已重启）')
+        if task['status'] == 'running':
+            _MATCH_CANCEL[task_id].set()
+            task.update(status='cancelled', progress='匹配已停止，上一批结果已保留', results=None, error=None)
+        return deepcopy(task)

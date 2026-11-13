@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Literal
 
 from server.services import debrief as debrief_svc
 
@@ -12,16 +13,7 @@ router = APIRouter(prefix="/debrief", tags=["debrief"])
 
 @router.get("/list")
 def list_all():
-    from server.config import APPLICATIONS_DIR
-    out = []
-    for archive in sorted(APPLICATIONS_DIR.glob("*/debrief.json")):
-        try:
-            data = json.loads(archive.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        for r in data.get("rounds", []):
-            out.append({"company_role": archive.parent.name, **r})
-    return {"rounds": sorted(out, key=lambda x: x.get("date", ""), reverse=True)}
+    return debrief_svc.list_history()
 
 
 class OrganizeBody(BaseModel):
@@ -78,3 +70,33 @@ def save_round(body: SaveBody):
     entry = debrief_svc.save_round(body.company, body.role, qa, body.focus,
                                    body.rating, body.note, body.review)
     return {"round": entry}
+
+
+class ImportMockBody(BaseModel):
+    company: str = Field(min_length=1, max_length=200)
+    role: str = Field(min_length=1, max_length=300)
+    session_id: str = Field(min_length=1, max_length=100)
+
+
+@router.post('/import-mock')
+def import_mock(body: ImportMockBody):
+    try:
+        return debrief_svc.import_mock(body.company, body.role, body.session_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class DeleteRoundBody(BaseModel):
+    archive: str = Field(min_length=1, max_length=500)
+    id: str = Field(min_length=1, max_length=100)
+    confirmed: Literal[True]
+
+
+@router.post('/delete')
+def delete_round(body: DeleteRoundBody):
+    try:
+        return {'deleted': debrief_svc.delete_round(body.archive, body.id)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc

@@ -6,10 +6,10 @@
 
     <div class="page-card">
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <el-select v-model="picked" placeholder="选择要准备面试的申请" style="width:360px"
+        <el-select v-model="picked" filterable placeholder="选择候选岗位或已创建的申请" style="width:360px"
                    :disabled="mocking || prepBusy || !!deletingMock">
-          <el-option v-for="r in rows" :key="r.company + r.role"
-                     :label="`${r.company} · ${r.role}${r.has_prep ? '（已有准备包）' : ''}`"
+          <el-option v-for="r in rows" :key="JSON.stringify([r.company, r.role])"
+                     :label="`${r.company} · ${r.role}（${r.source === 'candidate' ? '候选岗位' : '已创建申请'}）${r.has_prep ? '（已有准备包）' : ''}`"
                      :value="r.company + '||' + r.role" />
         </el-select>
         <el-button v-if="prepBusy" type="danger" :loading="prepTask.stopping" @click="stopGeneration">{{ prepTask.stopping ? '正在停止…' : '停止生成' }}</el-button>
@@ -102,8 +102,8 @@
             <span class="weakest">{{ weakest(row) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
-          <template #default="{ row }"><el-button size="small" text type="danger" :disabled="!!deletingMock" :loading="deletingMock === row.id" @click.stop="deleteSavedMock(row)">删除</el-button></template>
+        <el-table-column label="操作" width="220" fixed="right">
+          <template #default="{ row }"><el-button size="small" text type="primary" :disabled="!!deletingMock" @click.stop="viewDebrief(row.id)">查看历史复盘</el-button><el-button size="small" text type="danger" :disabled="!!deletingMock" :loading="deletingMock === row.id" @click.stop="deleteSavedMock(row)">删除</el-button></template>
         </el-table-column>
       </el-table>
     </div>
@@ -180,6 +180,9 @@
     </div>
 
     <div class="page-card" v-if="report">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+        <el-button type="primary" plain :disabled="!savedMockId || !report._saved" @click="viewDebrief(savedMockId)">查看历史复盘</el-button>
+      </div>
       <div class="report-top">
         <div class="report-score" :style="{ color: scoreColor(report.overall) }">{{ report.overall }}</div>
         <div>
@@ -188,7 +191,7 @@
           </el-tag>
           <div class="muted" style="margin-top:4px;max-width:640px">{{ report.advice }}</div>
           <div class="saved-hint" v-if="report._saved">
-            <el-icon><CircleCheckFilled /></el-icon>本场记录已存入「历史模拟面试」，可随时回看详情
+            <el-icon><CircleCheckFilled /></el-icon>{{ report._debriefSynced ? '本场记录已自动加入历史模拟面试和历史复盘' : '本场记录已保存，历史复盘将在打开时自动同步' }}
           </div>
         </div>
       </div>
@@ -258,15 +261,16 @@
     </div>
 
     <div class="page-card" v-if="!prep && !prepBusy && !mocking && !savedMocks.length">
-      <el-empty description="选择一个申请，AI 生成有层次的面试准备包" :image-size="90" />
+      <el-empty description="选择一个候选岗位或申请，AI 生成有层次的面试准备包" :image-size="90" />
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onMounted, reactive, ref, watch } from 'vue'
 import { ElCollapseTransition, ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import { useRouter } from 'vue-router'
 import { prepTask, startPrepGeneration, stopPrepTask, loadPrepId, clearPrepTask, onPrepDone, onPrepResumed } from '../store'
 
 const LAYERS = {
@@ -288,7 +292,10 @@ const draft = ref('')
 const report = ref(null)
 const chatBoxRef = ref()
 const savedMocks = ref([])
-const mockTableRef = ref()
+const router = useRouter()
+function viewDebrief(sessionId) {
+  router.push({ path: '/debrief', query: { mock_session: sessionId } })
+}
 const deletingMock = ref(''), savedMockId = ref('')
 let mockLoadVersion = 0
 function onMockRowClick(row, column, event) {
@@ -336,7 +343,15 @@ const weakest = (row) => {
   return `${w.score} 分 · ${w.question}`
 }
 
-async function refresh() { rows.value = (await api.get('/interview/applications')).rows }
+async function refresh() {
+  try { rows.value = (await api.get('/interview/applications')).rows }
+  catch (e) { ElMessage.error(e.message) }
+}
+let activatedOnce = false
+onActivated(() => {
+  if (activatedOnce) refresh()
+  activatedOnce = true
+})
 
 async function loadSavedMocks() {
   const version = ++mockLoadVersion, selection = picked.value
@@ -380,6 +395,7 @@ watch(picked, (v) => {
   }
   prep.value = null
   report.value = null
+  savedMockId.value = ''
   savedMocks.value = []
   if (!v) return
   const [company, role] = v.split('||')
@@ -390,6 +406,7 @@ watch(picked, (v) => {
 })
 
 async function startMock() {
+  savedMockId.value = ''
   mocking.value = true
   mockHistory.value = []
   report.value = null
@@ -429,6 +446,8 @@ async function endMock() {
       const saved = await api.post('/interview/mock/save', { ...pickedApp.value, history: mockHistory.value, report: report.value })
       savedMockId.value = saved.session.id
       report.value._saved = true
+      report.value._debriefSynced = saved.debrief_synced === true
+      if (saved.sync_warning) ElMessage.warning('模拟记录已保存，复盘同步待重试：' + saved.sync_warning)
     } catch { /* 存档失败不影响报告展示 */ }
     mocking.value = false
     await loadSavedMocks()

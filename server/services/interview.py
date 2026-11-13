@@ -104,6 +104,7 @@ def save_mock(company: str, role: str, history: list[dict], report: dict) -> dic
             data = {"sessions": []}
     session = {
         "id": uuid.uuid4().hex[:10],
+        "company": company, "role": role,
         "date": datetime.now().isoformat(timespec="seconds"),
         "rounds": sum(1 for h in history if h["role"] == "candidate"),
         "history": history,
@@ -205,9 +206,19 @@ def get_prep(company: str, role: str) -> dict | None:
 
 
 def list_applications() -> list[dict]:
-    rows = tracker_store.rows()
-    for r in rows:
-        r["has_prep"] = (_archive(r["company"], r["role"]) / "prep.json").exists()
+    """面试可选岗位：申请记录和全部候选岗位，按公司、岗位去重。"""
+    rows, seen = [], set()
+    for source, records in (("application", tracker_store.rows()),
+                            ("candidate", inbox_store.list_entries())):
+        for record in records:
+            key = (record["company"], record["role"])
+            if key in seen:
+                continue
+            seen.add(key)
+            row = dict(record)
+            row["source"] = source
+            row["has_prep"] = (_archive(*key) / "prep.json").exists()
+            rows.append(row)
     return rows
 
 

@@ -124,11 +124,13 @@
       </div>
     </div>
 
+    <el-alert v-if="syncWarnings.length" :title="'部分模拟记录暂未同步：' + syncWarnings.join('；')" type="warning" :closable="false" />
     <div class="page-card" v-if="history.length">
       <div class="sec-title" style="display:flex;align-items:center;gap:6px">
         <el-icon color="#7a5af5"><List /></el-icon>历史复盘
+        <span class="muted" style="margin-left:auto;font-weight:400">自动汇总手动复盘与模拟面试记录</span>
       </div>
-      <el-table ref="hisTableRef" :data="history" size="small" class="clickable-rows"
+      <el-table ref="hisTableRef" :data="history" row-key="id" size="small" class="clickable-rows"
                 :row-class-name="row => 'his-row'" @row-click="toggleHistory">
         <el-table-column type="expand">
           <template #default="{ row }">
@@ -140,7 +142,8 @@
                 </el-tag>
                 <span class="his-advice" v-if="row.review.advice">{{ row.review.advice }}</span>
               </div>
-              <div class="his-block" v-for="(item, i) in row.qa || []" :key="'q' + i">
+              <ImportedMockReview v-if="row.source_type === 'mock_interview'" :entry="row" />
+              <div class="his-block" v-for="(item, i) in (row.source_type === 'mock_interview' ? [] : row.qa || [])" :key="'q' + i">
                 <div class="his-q"><span class="qa-no">Q{{ i + 1 }}</span><span>{{ item.question }}</span></div>
                 <div class="his-a" v-if="item.answer">我的回答：{{ item.answer }}</div>
                 <div class="his-eval" v-for="(rq, j) in reviewFor(row, item.question)" :key="'e' + j"
@@ -169,6 +172,7 @@
             </div>
           </template>
         </el-table-column>
+        <el-table-column label="来源" width="100"><template #default="{ row }"><el-tag size="small" :type="row.source_type === 'mock_interview' ? 'info' : 'primary'">{{ row.source_type === 'mock_interview' ? '模拟面试' : '手动复盘' }}</el-tag></template></el-table-column>
         <el-table-column prop="date" label="日期" width="100" />
         <el-table-column prop="company_role" label="申请" min-width="170" />
         <el-table-column label="轮次" width="60">
@@ -182,16 +186,20 @@
             <span class="score-pill" :style="{ background: scoreColor(row.review?.overall || 0) + '18', color: scoreColor(row.review?.overall || 0) }">{{ row.review?.overall ?? '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="rating" label="自评" width="60" />
+        <el-table-column label="自评" width="60"><template #default="{ row }">{{ row.rating ?? '—' }}</template></el-table-column>
+        <el-table-column label="操作" width="85" fixed="right"><template #default="{ row }"><el-button size="small" text type="danger" :disabled="!!deletingRound" :loading="deletingRound === row.id" @click.stop="deleteHistory(row)">删除</el-button></template></el-table-column>
       </el-table>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, nextTick, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import { useRoute } from 'vue-router'
+import ImportedMockReview from '../components/ImportedMockReview.vue'
+const route = useRoute()
 
 const FOCUS = ['项目深挖', '技术基础', '系统设计', '加班文化', '稳定性', '薪资期望', '到岗时间', '团队协作', '学历背景']
 
@@ -202,6 +210,21 @@ const saving = ref(false)
 const organizing = ref(false)
 const report = ref(null)
 const history = ref([])
+const deletingRound = ref('')
+async function deleteHistory(row) {
+  if (deletingRound.value) return
+  deletingRound.value = row.id
+  try {
+    const note = row.source_type === 'mock_interview' ? '原模拟面试记录和准备包会保留，这条复盘不会自动重新加入。' : '仅删除这次复盘，其他复盘和准备包会保留。'
+    await ElMessageBox.confirm(`确定删除“${row.company_role}”在 ${row.date} 的这条历史复盘？${note}`, '删除历史复盘', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' })
+    const result = await api.post('/debrief/delete', { archive: row.company_role, id: row.id, confirmed: true })
+    history.value = history.value.filter(item => item.id !== row.id)
+    ElMessage.success(result.deleted ? '历史复盘已删除' : '该记录已不存在，列表已更新')
+    await refresh()
+  } catch(e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message) }
+  finally { deletingRound.value = '' }
+}
+const syncWarnings = ref([])
 const focusExtra = ref('')
 const raw = ref('')
 function addFocus() {
@@ -300,12 +323,22 @@ async function acceptStar(s) {
 }
 
 async function refresh() {
-  rows.value = (await api.get('/interview/applications')).rows
-  history.value = (await api.get('/debrief/list')).rounds
+  try {
+    const [apps, saved] = await Promise.all([api.get('/interview/applications'), api.get('/debrief/list')])
+    rows.value = apps.rows; history.value = saved.rounds; syncWarnings.value = saved.sync_warnings || []
+    const imported = history.value.find(r => r.source_type === 'mock_interview' && r.source_session_id === route.query.mock_session)
+    if (imported) {
+      await nextTick()
+      hisTableRef.value?.toggleRowExpansion(imported, true)
+      await nextTick()
+      document.querySelector('.his-detail')?.scrollIntoView({ block: 'start' })
+    }
+  } catch(e) { ElMessage.error(e.message) }
 }
 
 const hisTableRef = ref()
-function toggleHistory(row) {
+function toggleHistory(row, column, event) {
+  if (event?.target?.closest?.('.el-table__expand-icon, button, summary, a')) return
   hisTableRef.value?.toggleRowExpansion(row)
 }
 function reviewFor(row, question) {
@@ -317,7 +350,7 @@ function reviewFor(row, question) {
   return m ? [m] : []
 }
 
-onMounted(refresh)
+onActivated(refresh)
 </script>
 
 <style scoped>

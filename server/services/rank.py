@@ -18,7 +18,7 @@ from server.services import ai, prompts
 from server.services.parse import VETO_KEYWORDS
 from server.storage.profile import load_candidate
 
-WEIGHTS = {"技能匹配": 0.40, "经历匹配": 0.35, "学历资质": 0.15, "发展匹配": 0.10}
+WEIGHTS = {"技能匹配": 0.35, "经历匹配": 0.35, "学历资质": 0.20, "发展匹配": 0.10}
 DIM_NAMES = list(WEIGHTS)
 
 EMPLOYMENT_VETO = "外包/劳务派遣 一票否决"

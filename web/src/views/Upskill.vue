@@ -7,9 +7,6 @@
         <el-button type="primary" :loading="generating" @click="makeRoadmap">
           <el-icon style="margin-right:3px"><MagicStick /></el-icon>{{ roadmap ? '重新生成路线图' : 'AI 生成学习路线图' }}
         </el-button>
-        <el-button :loading="analyzing" @click="loadGaps">
-          <el-icon style="margin-right:3px"><TrendCharts /></el-icon>刷新差距热图
-        </el-button>
         <span class="muted" v-if="roadmap">生成于 {{ roadmap.date }}</span>
       </div>
     </div>
@@ -50,21 +47,6 @@
                 <span class="topic-chip" v-for="(t, i) in p.topics" :key="i" :class="{ first: i === 0 }">{{ t }}</span>
               </div>
             </div>
-            <div class="ph-block" v-if="p.closes?.length">
-              <span class="blk-label ok">弥补哪些岗位要求</span>
-              <div class="ph-topics" style="margin-top:4px">
-                <span class="topic-chip close-chip" v-for="(c, i) in p.closes" :key="i">{{ c }}</span>
-              </div>
-            </div>
-            <div class="ph-block" v-if="p.milestone">
-              <span class="blk-label purple">完成检验</span>
-              <p class="milestone">{{ p.milestone }}</p>
-            </div>
-            <div class="plan-res" v-if="p.resources?.length">
-              <a v-for="(r, j) in p.resources" :key="j" :href="r.url" target="_blank" rel="noopener" class="res-link">
-                <el-icon><Link /></el-icon>{{ r.title }}
-              </a>
-            </div>
             <div style="margin-top:10px">
               <el-button size="small" :type="p.done ? 'success' : 'default'" plain @click="toggleDone(p)">
                 <el-icon style="margin-right:3px"><Check /></el-icon>{{ p.done ? '已完成' : '标记完成' }}
@@ -72,28 +54,6 @@
             </div>
           </div>
         </div>
-      </div>
-    </div>
-
-    <div class="page-card" v-if="gapData.gaps?.length">
-      <div class="sec-title" style="display:flex;align-items:center;gap:6px">
-        <el-icon color="#e07c1f"><TrendCharts /></el-icon>技能差距热图（关键词频次参考）
-      </div>
-      <div class="heat" v-for="(g, i) in gapData.gaps" :key="i">
-        <span class="h-rank" :class="'r' + heatLevel(g)">{{ i + 1 }}</span>
-        <span class="h-name">{{ g.keyword }}</span>
-        <div class="h-track">
-          <div class="h-fill" :style="{ width: heatWidth(g) + '%', background: heatColor(g) }"></div>
-        </div>
-        <span class="h-meta">
-          <span class="h-pct num-tabular">{{ Math.round(heatWidth(g)) }}%</span>
-          <el-tag v-if="g.stuck_count" size="small" type="danger" style="margin-left:6px">★卡壳 {{ g.stuck_count }}</el-tag>
-        </span>
-      </div>
-      <div class="heat-legend">
-        <span><i style="background:#d93025"></i>面试卡壳</span>
-        <span><i style="background:#f0894f"></i>高频要求</span>
-        <span><i style="background:#4a90d9"></i>一般差距</span>
       </div>
     </div>
 
@@ -108,9 +68,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 
-const gapData = ref({})
 const roadmap = ref(null)
-const analyzing = ref(false)
 const generating = ref(false)
 
 const doneCount = computed(() => (roadmap.value?.roadmap || []).filter(p => p.done).length)
@@ -123,25 +81,6 @@ const covType = (c) => ({ 已覆盖: 'success', 部分覆盖: 'warning', 缺口:
 const isCurrent = (p) => {
   const first = (roadmap.value?.roadmap || []).find(x => !x.done)
   return first ? first.phase === p.phase : false
-}
-
-const heatLevel = (g) => (g.stuck_count > 0 ? 3 : g.jd_count >= 2 ? 2 : 1)
-const heatColor = (g) => {
-  const lv = heatLevel(g)
-  const w = heatWidth(g)
-  if (lv === 3) return 'linear-gradient(90deg, #d93025, #f0704f)'
-  if (lv === 2 || w > 55) return 'linear-gradient(90deg, #e07c1f, #f0b26a)'
-  return 'linear-gradient(90deg, #4a90d9, #7ab3ec)'
-}
-
-const heatWidth = (g) => {
-  const max = Math.max(...(gapData.value.gaps || []).map(x => x.jd_count * 2 + x.stuck_count * 3), 1)
-  return Math.max(8, ((g.jd_count * 2 + g.stuck_count * 3) / max) * 100)
-}
-
-async function loadGaps() {
-  analyzing.value = true
-  try { gapData.value = await api.get('/upskill/gaps') } finally { analyzing.value = false }
 }
 
 async function makeRoadmap() {
@@ -160,7 +99,6 @@ async function toggleDone(p) {
 }
 
 onMounted(async () => {
-  await loadGaps()
   const d = await api.get('/upskill/roadmap')
   if (d.roadmap) roadmap.value = d.roadmap
 })
@@ -169,12 +107,6 @@ onMounted(async () => {
 <style scoped>
 .sec-title { font-size: 14.5px; font-weight: 600; margin-bottom: 12px; }
 .direction { font-size: 13px; color: #3d4757; line-height: 1.8; background: #f8faff; border: 1px solid #e3eaf8; border-radius: 10px; padding: 12px 14px; }
-.heat { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
-.h-name { width: 150px; flex-shrink: 0; font-size: 13px; color: #1f2733; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.h-track { flex: 1; height: 16px; background: #f0f2f7; border-radius: 5px; overflow: hidden; }
-.h-fill { height: 100%; background: #2f66f6; border-radius: 5px; transition: width .6s cubic-bezier(.22,1,.36,1); }
-.h-fill.stuck { background: linear-gradient(90deg, #d93025, #f0704f); }
-.h-meta { width: 210px; flex-shrink: 0; font-size: 12px; color: #5b6575; display: flex; align-items: center; }
 .closes-label { color: #18a058; font-weight: 600; }
 .closes-item { display: inline-block; margin-right: 10px; }
 .plan-res { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
